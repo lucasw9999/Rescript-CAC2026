@@ -1,0 +1,8 @@
+mlx-audio>=0.5.3
+mlx-whisper>=0.4.3
+onnxruntime>=1.30.0
+transformers>=5.17.0
+huggingface_hub>=1.13.0
+opencv-python>=5.0.0
+scipy>=1.17
+numpy>=2.4

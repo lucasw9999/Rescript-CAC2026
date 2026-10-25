@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""Rescript: polish a screen-recorded talk in one command.
+
+  rescript polish <video> [--voice NAME | --ref START END] [--rewrite] [--fresh] [--no-check]
+  rescript fix <video> <time> ["what to change"]
+  rescript save-voice <video> NAME
+  rescript doctor
+  rescript app        (Rescript Studio: drag and drop, before/after, fix any line)
+
+The pipeline is the scripts in scripts/. The steps that need judgment (writing the script,
+rewording lines the voice clone got wrong, checking frames against lines) go to Codex through
+`codex exec`, so they run on your ChatGPT subscription. Each step's output stays in
+/tmp/polish-<name>/, and a rerun skips the steps that are already done.
+"""
+import argparse, hashlib, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS, VOICES = ROOT / "scripts", ROOT / "voices"
+MODEL, EFFORT = "gpt-6.1-sol", "high"
+
+
+def run(script, *args):
+    subprocess.run([sys.executable, str(SCRIPTS / script), *map(str, args)], check=True)
+
+def step(msg): print(f"\n== {msg}", flush=True)
+
+def workdir(video):
+    slug = re.sub(r"[^a-z0-9]+", "-", video.stem.lower()).strip("-")[:48] or "talk"
+    return Path("/tmp") / f"polish-{slug}"
+
+def load(p): return json.loads(Path(p).read_text())
+def save(p, x): Path(p).write_text(json.dumps(x, indent=1))
+def unit_text(u): return u["text"] if isinstance(u, dict) else u[2]
+
+
+# ---------- Codex ----------
+
+def codex(a, wd, prompt, schema, images=()):
+    """One non-interactive Codex turn whose final message must match `schema`."""
+    if not shutil.which("codex"):
+        sys.exit("Codex CLI not found. Install it, then run `codex login` with your ChatGPT account.")
+    sp, out = wd / "codex_schema.json", wd / "codex_out.json"
+    save(sp, schema); out.unlink(missing_ok=True)
+    cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", str(wd),
+           "-m", a.model, "-c", f'model_reasoning_effort="{a.effort}"', "--output-schema", str(sp), "-o", str(out)]
+    for im in images: cmd += ["-i", str(im)]
+    r = subprocess.run(cmd, input=prompt, text=True, capture_output=True)   # prompt arrives on stdin
+    if r.returncode or not out.exists():
+        sys.exit(f"codex exec failed (exit {r.returncode}):\n{(r.stderr or r.stdout)[-3000:]}")
+    txt = out.read_text().strip()
+    txt = re.sub(r"^```(?:json)?\s*|\s*```$", "", txt)
+    try: return json.loads(txt)
+    except json.JSONDecodeError: sys.exit(f"Codex did not return JSON:\n{txt[:2000]}")
+
+def obj(**props):
+    """A strict JSON-schema object: every property required, nothing extra."""
+    return {"type": "object", "additionalProperties": False, "required": list(props), "properties": props}
+
+INT, NUM, STR = {"type": "integer"}, {"type": "number"}, {"type": "string"}
+def arr(x): return {"type": "array", "items": x}
+
+def script_rules():
+    """The script-writing rules (rules/script-rules.md)."""
+    t = (ROOT / "rules" / "script-rules.md").read_text()
+    i = t.find("3. **Write `script.json`.**")
+    if i < 0: sys.exit("rules/script-rules.md is missing the 'Write script.json' rules.")
+    return t[i:].strip()
+
+
+# ---------- steps ----------
+
+def pick_frames(wd, n=12):
+    fr = sorted((wd / "frames").glob("f*.jpg"))
+    if len(fr) > n: fr = [fr[round(k * (len(fr) - 1) / (n - 1))] for k in range(n)]
+    end = wd / "frames" / "end.jpg"
+    if not end.exists():
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-sseof", "-1", "-i", str(wd / "in.mov"),
+                        "-frames:v", "1", "-vf", "scale=1100:-1", "-pix_fmt", "yuvj420p", str(end)])   # jpeg wants full range
+    return fr + ([end] if end.exists() else [])
+
+def check_script(units, breaks, W):
+    """Mechanical checks only: does the script cover every word, once, in order?"""
+    errs, nxt = [], 0
+    if not units: return ["no units"]
+    for k, u in enumerate(units):
+        w0, w1 = u["first_word"], u["last_word"]
+        if w0 != nxt: errs.append(f"unit {k} starts at word {w0}, expected {nxt}")
+        if w1 < w0: errs.append(f"unit {k} ends (word {w1}) before it starts (word {w0})")
+        if not u["text"].strip(): errs.append(f"unit {k} has no text")
+        if u["end"] is not None and 0 <= w0 < len(W) and u["end"] <= W[w0][0]:
+            errs.append(f"unit {k} end={u['end']} is before its first word at {W[w0][0]:.2f}s")
+        nxt = w1 + 1
+    if nxt != len(W): errs.append(f"the last unit ends at word {nxt - 1}, but the last word is {len(W) - 1}")
+    errs += [f"break {b} is not a unit index between 1 and {len(units) - 1}" for b in breaks if not 0 < b < len(units)]
+    return errs
+
+def write_script(a, wd):
+    W = load(wd / "words.json")
+    frames = pick_frames(wd)
+    times = ", ".join("the last second" if f.stem == "end" else f"{int(f.stem[1:])} s" for f in frames)
+    prompt = f"""You are writing the narration script for Rescript, which re-voices a screen-recorded talk
+in the speaker's cloned voice and retimes the video to fit. Follow these rules:
+
+{script_rules()}
+
+For this run, return JSON instead of writing script.json:
+- units: in order, each with first_word, last_word, text, and end. end is null unless you are cutting
+  that unit's video short at that time in seconds (the {{"words": ..., "end": t}} form). Do not use the "src" form.
+- breaks: indices of the units that open a new section. Never 0: the first unit needs no break.
+Don't run commands or edit files; everything you need is in this message.
+
+The {len(frames)} attached images are frames of the recording, in order, at: {times}. Use them for the
+correct names, numbers and units, and to spot an ending that shows an error page or a dead tab.
+
+The transcript has {len(W)} words, indexed 0 to {len(W) - 1}, as "index:word". "<1.2s>[34.5]" marks a
+1.2 s pause before the word that starts at 34.5 s.
+
+TRANSCRIPT
+{(wd / "transcript.txt").read_text()}"""
+    schema = obj(units=arr(obj(first_word=INT, last_word=INT, text=STR, end={"type": ["number", "null"]})),
+                 breaks=arr(INT))
+    for attempt in range(3):
+        r = codex(a, wd, prompt, schema, frames)
+        errs = check_script(r["units"], r["breaks"], W)
+        if not errs: break
+        print("  script didn't cover the transcript cleanly; asking Codex to fix it:\n   - " + "\n   - ".join(errs))
+        prompt += ("\n\nYOUR PREVIOUS ANSWER WAS INVALID. Fix these problems and return the whole script again:\n- "
+                   + "\n- ".join(errs) + "\nPrevious answer:\n" + json.dumps(r))
+    else:
+        sys.exit("Codex could not produce a script that covers the transcript. Last problems:\n- " + "\n- ".join(errs))
+    S = [[u["first_word"], u["last_word"], u["text"]] if u["end"] is None
+         else {"words": [u["first_word"], u["last_word"]], "end": u["end"], "text": u["text"]} for u in r["units"]]
+    save(wd / "script.json", S); save(wd / "breaks.json", sorted(set(r["breaks"])))
+    for i, u in enumerate(S): print(f"  u{i:02d} {unit_text(u)}")
+
+def get_voice(a, wd):
+    if a.voice:
+        wav, txt = VOICES / f"{a.voice}_ref.wav", VOICES / f"{a.voice}_ref.txt"
+        if not (wav.exists() and txt.exists()):
+            have = sorted(p.name[:-8] for p in VOICES.glob("*_ref.wav")) if VOICES.exists() else []
+            sys.exit(f"No saved voice '{a.voice}' in {VOICES}. Saved voices: {', '.join(have) or 'none'}")
+        shutil.copy(wav, wd / "ref.wav"); shutil.copy(txt, wd / "ref.txt")
+        print(f"  using saved voice '{a.voice}'"); return
+    if not a.ref and (wd / "ref.wav").exists() and (wd / "ref.txt").exists():
+        print("  reusing ref.wav from the last run"); return
+    W = load(wd / "words.json")
+    if a.ref:
+        s, e = a.ref
+        span = [w for w in W if w[0] >= s - 0.05 and w[1] <= e + 0.05]
+        if not span: sys.exit(f"No words between {s} s and {e} s.")
+    else:
+        top = (wd / "ref_candidates.txt").read_text().splitlines()
+        if not top: sys.exit("No fluent 10-18 s span found to clone the voice from. Pass --ref START END.")
+        i, j = map(int, re.match(r"words (\d+)-(\d+)", top[0]).groups())
+        span = W[i:j + 1]; s, e = span[0][0], span[-1][1]
+    text = " ".join(w[2].strip() for w in span)
+    print(f"  voice reference {s:.2f}-{e:.2f} s: {text}")
+    run("restore_ref.py", wd, f"{s:.2f}", f"{e:.2f}")
+    (wd / "ref.txt").write_text(text)
+
+def voice_key(wd):
+    return hashlib.sha1((wd / "ref.wav").read_bytes() + (wd / "ref.txt").read_bytes()).hexdigest()
+
+def unspoken(wd):
+    """Lines with no audio yet, or whose text or voice changed since they were spoken."""
+    S, rec = load(wd / "script.json"), wd / "tts" / "spoken.json"
+    done = load(rec) if rec.exists() else {}
+    said = done.get("units", {}) if done.get("voice") == voice_key(wd) else {}
+    return [i for i, u in enumerate(S) if not (wd / "tts" / f"u{i:02d}.wav").exists() or said.get(str(i)) != unit_text(u)]
+
+def speak(a, wd, units):
+    if not units: print("  all lines already spoken"); return
+    run("tts.py", wd, (wd / "ref.txt").read_text().strip(), ",".join(map(str, units)))
+    S, rec, key = load(wd / "script.json"), wd / "tts" / "spoken.json", voice_key(wd)
+    done = load(rec) if rec.exists() else {}
+    if done.get("voice") != key: done = {"voice": key, "units": {}}
+    done["units"].update({str(i): unit_text(S[i]) for i in units}); save(rec, done)
+
+def reword_suspects(a, wd):
+    """Let Codex decide which SUSPECT lines need new wording, then speak only those again."""
+    bad = [c for c in load(wd / "tts" / "verify.json") if c["ratio"] < 0.9]
+    if not bad: return []
+    S = load(wd / "script.json")
+    prompt = ("A voice clone read these lines of a talk, and a transcriber wrote down what it heard. WANT is "
+              "the script line, GOT is what was heard. For each line decide whether the clone really said it "
+              "wrong. If the difference is only formatting (digits versus words, punctuation, hyphens, the "
+              "same word spelled differently), return the text unchanged. Otherwise reword the line so the "
+              "clone will read it cleanly, for example split a long sentence, add a joining word, or rephrase "
+              "a phrase it stumbled on. Keep every fact and add none. Keep the speaker's plain first-person "
+              "voice. Don't run commands.\n\n"
+              + "\n\n".join(f"unit {c['unit']}\n  WANT: {c['want']}\n  GOT : {c['got']}" for c in bad))
+    r = codex(a, wd, prompt, obj(units=arr(obj(unit=INT, text=STR))))
+    changed = []
+    for u in r["units"]:
+        i, t = u["unit"], u["text"].strip()
+        if i not in {c["unit"] for c in bad} or not t or t == unit_text(S[i]): continue
+        print(f"  u{i:02d} reworded: {t}")
+        if isinstance(S[i], dict): S[i]["text"] = t
+        else: S[i][2] = t
+        changed.append(i)
+    if changed: save(wd / "script.json", S)
+    return changed
+
+def render(wd, out, a=None):
+    """Re-cut the video. Pace and pause chosen on polish are remembered, so a later fix keeps the same feel."""
+    br = load(wd / "breaks.json") if (wd / "breaks.json").exists() else []
+    feel = load(wd / "render.json") if (wd / "render.json").exists() else {}
+    for k in ("pace", "pause"):
+        if a is not None and getattr(a, k, None) is not None: feel[k] = getattr(a, k)
+    save(wd / "render.json", feel)
+    run("render.py", wd, out, "--breaks", ",".join(map(str, br)), *sum((["--" + k, str(v)] for k, v in feel.items()), []))
+
+def out_times(wd):
+    t, starts = 0.0, []
+    for s, vs, ve, d in load(wd / "segs.json"): starts.append((t, d)); t += d
+    return starts
+
+def check_result(a, wd, out):
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(out), "-af", "ebur128", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    m = re.findall(r"I:\s+(-?[\d.]+) LUFS", r.stderr)
+    print(f"  loudness {m[-1]} LUFS (target -16)" if m else "  couldn't measure loudness")
+    S, st = load(wd / "script.json"), out_times(wd)
+    pick = sorted({0, len(S) // 3, 2 * len(S) // 3, len(S) - 1})
+    (wd / "check").mkdir(exist_ok=True); imgs = []
+    for i in pick:
+        t0, d = st[i]; p = wd / "check" / f"u{i:02d}.jpg"
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t0 + d / 2:.2f}", "-i", str(out),
+                        "-frames:v", "1", "-vf", "scale=1100:-1", "-pix_fmt", "yuvj420p", str(p)], check=True)
+        imgs.append(p)
+    prompt = ("These images are frames from a re-voiced screen recording, one per line, taken while that line "
+              "is being spoken. For each, say whether what's on screen fits what the narrator is saying at that "
+              "moment. A slide or screen that the line is clearly about counts as a match; a different slide, "
+              "an error page, or an unrelated screen does not. Don't run commands.\n\n"
+              + "\n".join(f"image {k + 1}, unit {i}: {unit_text(S[i])}" for k, i in enumerate(pick)))
+    r = codex(a, wd, prompt, obj(checks=arr(obj(unit=INT, matches={"type": "boolean"}, note=STR))), imgs)
+    for c in r["checks"]:
+        t0 = st[c["unit"]][0] if 0 <= c["unit"] < len(st) else 0
+        print(f"  {'ok ' if c['matches'] else 'OFF'} u{c['unit']:02d} at {int(t0 // 60)}:{t0 % 60:04.1f}  {c['note']}")
+
+
+# ---------- commands ----------
+
+def resolve(video):
+    v = Path(video).expanduser().resolve()
+    if not v.exists(): sys.exit(f"No such file: {v}")
+    return v, workdir(v), v.with_name(f"{v.stem} - polished.mp4")
+
+def cmd_polish(a):
+    video, wd, out = resolve(a.video)
+    link = wd / "in.mov"
+    if a.fresh and wd.exists(): shutil.rmtree(wd)
+    elif link.exists() and link.resolve() != video:
+        sys.exit(f"{wd} belongs to {link.resolve()}. Rerun with --fresh to start over for this video.")
+
+    step("1/6 Transcribe and grab frames")
+    if (wd / "words.json").exists(): print("  already done")
+    else: run("prepare.py", video, wd)
+
+    step(f"2/6 Write the script (Codex, {a.model}, {a.effort} reasoning)")
+    if (wd / "script.json").exists() and not a.rewrite: print("  reusing script.json (pass --rewrite for a new one)")
+    else: write_script(a, wd)
+
+    step("3/6 Voice reference")
+    get_voice(a, wd)
+
+    step("4/6 Speak every line in the cloned voice and check it")
+    todo = unspoken(wd)
+    speak(a, wd, todo)
+    if todo and (again := reword_suspects(a, wd)):
+        speak(a, wd, again)
+
+    step("5/6 Retime the video to the new narration")
+    render(wd, out, a)
+
+    if not a.no_check:
+        step("6/6 Check loudness and that the screen matches the words")
+        check_result(a, wd, out)
+
+    print(f"\nDone: {out}\nListen to it. To change a line, give its time, for example:\n"
+          f"  rescript fix \"{video}\" 2:14 \"say the product name more clearly\"")
+    if not a.voice: print(f"To keep this voice for next time:  rescript save-voice \"{video}\" <name>")
+
+def parse_time(s):
+    t = 0.0
+    for part in s.split(":"): t = t * 60 + float(part)
+    return t
+
+def cmd_fix(a):
+    video, wd, out = resolve(a.video)
+    if not (wd / "segs.json").exists(): sys.exit(f"Nothing to fix yet: run  rescript polish \"{video}\"  first.")
+    S, W, st, t = load(wd / "script.json"), load(wd / "words.json"), out_times(wd), parse_time(a.time)
+    i = next((k for k, (t0, d) in enumerate(st) if t < t0 + d), len(st) - 1)
+    print(f"  {a.time} is in line u{i:02d}: {unit_text(S[i])}")
+    if a.change:
+        u = S[i]
+        w = u if isinstance(u, list) else u.get("words")
+        said = " ".join(x[2].strip() for x in W[w[0]:w[1] + 1]) if w else "(spliced from another recording)"
+        prompt = (f"Rewrite one line of a talk's narration script. Follow these rules:\n\n"
+                  f"{script_rules()}\n\nWhat the speaker originally said for this line: {said}\n"
+                  f"Previous line: {unit_text(S[i - 1]) if i else '(none)'}\n"
+                  f"Current line: {unit_text(u)}\n"
+                  f"Next line: {unit_text(S[i + 1]) if i + 1 < len(S) else '(none)'}\n\n"
+                  f"The user's request for this line: {a.change}\n\nChange only what the request asks for. The current "
+                  "line was already checked against the slides, so keep its other words, names and numbers as they "
+                  "are. Return only the new text of the current line. "
+                  "Don't run commands.")
+        new = codex(a, wd, prompt, obj(text=STR))["text"].strip()
+        if isinstance(u, dict): u["text"] = new
+        else: u[2] = new
+        save(wd / "script.json", S)
+        print(f"  new text: {new}")
+    speak(a, wd, [i])
+    render(wd, out)
+    print(f"\nDone: {out}  (u{i:02d} starts at {int(st[i][0] // 60)}:{st[i][0] % 60:04.1f})")
+
+def cmd_save_voice(a):
+    video, wd, _ = resolve(a.video)
+    if not ((wd / "ref.wav").exists() and (wd / "ref.txt").exists()): sys.exit("No voice reference in that work dir yet.")
+    VOICES.mkdir(exist_ok=True)
+    shutil.copy(wd / "ref.wav", VOICES / f"{a.name}_ref.wav"); shutil.copy(wd / "ref.txt", VOICES / f"{a.name}_ref.txt")
+    print(f"saved {VOICES / a.name}_ref.wav (gitignored). Use it with  --voice {a.name}")
+
+def main():
+    ap = argparse.ArgumentParser(prog="rescript", description="Polish a screen-recorded talk in your own cloned voice.")
+    ap.add_argument("--model", default=MODEL, help=f"Codex model (default {MODEL})")
+    ap.add_argument("--effort", default=EFFORT, help=f"Codex reasoning effort (default {EFFORT})")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("polish", help="run the whole pipeline on a recording")
+    p.add_argument("video")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--voice", help="use a voice saved with save-voice")
+    g.add_argument("--ref", nargs=2, type=float, metavar=("START", "END"), help="clone from this span (seconds)")
+    p.add_argument("--rewrite", action="store_true", help="ask Codex for a new script even if one exists")
+    p.add_argument("--fresh", action="store_true", help="delete the work dir and start over")
+    p.add_argument("--no-check", action="store_true", help="skip the loudness and frame check")
+    p.add_argument("--pace", type=float, help="narration speed, below 1 is slower (default 0.92)")
+    p.add_argument("--pause", type=float, help="seconds between lines (default 0.6)")
+    p.set_defaults(fn=cmd_polish)
+    p = sub.add_parser("fix", help="redo one line, found by its time in the polished video")
+    p.add_argument("video"); p.add_argument("time", help="e.g. 2:14 or 134")
+    p.add_argument("change", nargs="?", help="what to change; omit to just re-speak the line")
+    p.set_defaults(fn=cmd_fix)
+    p = sub.add_parser("save-voice", help="keep this run's voice reference for later runs")
+    p.add_argument("video"); p.add_argument("name"); p.set_defaults(fn=cmd_save_voice)
+    p = sub.add_parser("app", help="open Rescript Studio, the drag-and-drop app, in your browser")
+    p.add_argument("--no-browser", action="store_true", help="start the app without opening a browser window")
+    p.set_defaults(fn=lambda a: os.execv(sys.executable, [sys.executable, str(ROOT / "app" / "server.py")]
+                                         + (["--no-browser"] if a.no_browser else [])))
+    p = sub.add_parser("doctor", help="check that this Mac can run Rescript")
+    p.set_defaults(fn=lambda a: sys.exit(subprocess.run([sys.executable, str(SCRIPTS / "check_setup.py")]).returncode))
+    sys.stdout.reconfigure(line_buffering=True)   # keep our lines in order with the scripts' output
+    a = ap.parse_args(); a.fn(a)
+
+if __name__ == "__main__":
+    main()

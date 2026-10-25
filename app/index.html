@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a6cff">
+<title>Rescript Studio</title>
+<link rel="icon" href="./assets/images/icon.png" type="image/png">
+<link rel="stylesheet" href="./studio.css">
+</head>
+<body>
+<a class="skip-link" href="#view-home">Skip to workspace</a>
+<header class="top">
+  <div class="brand-wrap"><img class="brand-icon" src="./assets/images/icon.png" width="1024" height="1024" alt=""><div class="brand">Re<span>script</span> <em>Studio</em></div></div>
+  <div class="top-actions"><button class="motion-control" id="crew-motion" type="button" aria-pressed="false" hidden>Pause crew</button><button class="link" id="home-btn" type="button" hidden>← All recordings</button></div>
+</header>
+
+<!-- All original view IDs and behavior hooks are retained. -->
+<main id="view-home" class="view" tabindex="-1" aria-labelledby="home-title">
+  <div class="home-intro"><span class="eyebrow">A little crew. Your best take.</span><h1 id="home-title">A clearer talk starts here.</h1><p class="hero">Record once. Rescript turns it into a clear, confident talk in your own voice.</p></div>
+  <label class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a screen recording or drop one here" aria-describedby="drop-help">
+    <input type="file" id="file" accept="video/*,.mov,.mp4,.m4v" hidden>
+    <div class="drop-copy"><div class="drop-icon"><svg class="od-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="13" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="m10 9 5 3-5 3V9ZM8 21h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>YOUR RECORDING GOES HERE</div><h2>Drop a screen recording</h2><p id="drop-help">or <u>choose a file</u>. A .mov or .mp4 of you talking through slides or a demo.</p><p class="file-note">Same ideas. Same voice. A clearer take.</p></div>
+    <div class="crew-intro"><div class="crew-slot home-crew" id="home-crew" aria-hidden="true"><div class="crew-still"><img src="./assets/characters/pip.png" width="512" height="512" alt=""><img src="./assets/characters/kit.png" width="512" height="512" alt=""><img src="./assets/characters/echo.png" width="512" height="512" alt=""><img src="./assets/characters/tempo.png" width="512" height="512" alt=""><img src="./assets/characters/scout.png" width="512" height="512" alt=""></div></div><p class="crew-caption">Pip, Kit, Echo, Tempo &amp; Scout are ready to help.</p></div>
+    <div class="upload" id="upload" role="status" hidden><div class="bar"><i id="upload-bar"></i></div><span id="upload-text"></span></div>
+  </label>
+  <div class="options"><label class="voice-field">Voice<select id="voice"><option value="">Clone it from this recording</option></select></label><label class="check"><input type="checkbox" id="cursor"> Remove the mouse cursor</label></div>
+  <p class="privacy"><svg class="od-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span><strong>Stays on this Mac:</strong> your audio, your video and your voice. GPT only gets text (the transcript and your change requests) and a few still frames.</span></p>
+  <section id="recent-box" aria-labelledby="recent-title" hidden><div class="section-heading"><h2 id="recent-title">Recent recordings</h2><p>Pick up where you left off.</p></div><ul id="recent"></ul></section>
+</main>
+
+<main id="view-work" class="view" tabindex="-1" aria-labelledby="work-title" hidden>
+  <div class="work-heading"><div><span class="eyebrow">Your recording, in good hands</span><h1 class="title" id="work-title"></h1><p class="sub" id="work-sub">Rescript is working. You can leave this open.</p></div><span class="work-note"><i aria-hidden="true"></i><span id="crew-status">The crew is getting ready.</span></span></div>
+  <ol class="steps" id="steps" aria-label="Recording progress">
+    <li data-stages="1" data-character="pip"><b>1</b><span class="step-state">Waiting</span><div class="crew-slot crew-portrait" aria-hidden="true"><img src="./assets/characters/pip.png" width="512" height="512" alt=""></div><h3>Transcribe</h3><p>Every word, with its time</p><span class="crew-name">Pip · the careful listener</span></li>
+    <li data-stages="2" data-character="kit"><b>2</b><span class="step-state">Waiting</span><div class="crew-slot crew-portrait" aria-hidden="true"><img src="./assets/characters/kit.png" width="512" height="512" alt=""></div><h3>Rewrite</h3><p>A clean script, same facts</p><span class="crew-name">Kit · the script tidier</span></li>
+    <li data-stages="3,4" data-character="echo"><b>3</b><span class="step-state">Waiting</span><div class="crew-slot crew-portrait" aria-hidden="true"><img src="./assets/characters/echo.png" width="512" height="512" alt=""></div><h3>Re-voice</h3><p>Spoken in your own voice</p><span class="crew-name">Echo · still sounds like you</span></li>
+    <li data-stages="5" data-character="tempo"><b>4</b><span class="step-state">Waiting</span><div class="crew-slot crew-portrait" aria-hidden="true"><img src="./assets/characters/tempo.png" width="512" height="512" alt=""></div><h3>Retime</h3><p>The video re-cut to fit</p><span class="crew-name">Tempo · slides meet words</span></li>
+    <li data-stages="6" data-character="scout" class="small"><b>✓</b><span class="step-state">Waiting</span><div class="crew-slot crew-portrait" aria-hidden="true"><img src="./assets/characters/scout.png" width="512" height="512" alt=""></div><h3>Check</h3><p>Sound level and sync</p></li>
+    <li data-stages="7" class="small" id="step-cursor" hidden><b>⌖</b><span class="step-state">Waiting</span><div class="crew-portrait cursor-mark" aria-hidden="true"><svg class="od-icon" viewBox="0 0 24 24" fill="none"><path d="m6 3 13 11-7 1-3 6L6 3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>Cursor</h3><p>Erased frame by frame</p></li>
+  </ol>
+  <div class="status" role="status"><span class="spinner" aria-hidden="true"></span><span id="work-detail">Starting</span><span class="muted" id="work-time"></span></div>
+  <div class="error" id="work-error" role="alert" hidden></div>
+  <button class="primary" id="fresh-btn" type="button" hidden>Start over for this recording</button>
+  <details class="log"><summary>Show details</summary><pre id="work-log"></pre></details>
+</main>
+
+<main id="view-result" class="view" tabindex="-1" aria-labelledby="res-title" hidden>
+  <div class="result-head"><div class="result-summary"><div class="result-heading"><img src="./assets/characters/scout.png" width="512" height="512" alt=""><div><span class="eyebrow">Your talk, ready to review</span><h1 class="title" id="res-title"></h1></div></div><div class="chips" id="chips" aria-label="Recording statistics"></div></div><div class="actions"><button id="reveal" type="button">Show in Finder</button><button id="cursor-btn" type="button">Remove cursor</button><button id="save-voice" type="button">Save this voice</button></div></div>
+  <div class="players"><figure><figcaption><span class="player-label"><i class="player-dot" aria-hidden="true"></i>Before</span><span class="muted" id="cap-before"></span></figcaption><video id="before" controls preload="metadata" aria-label="Original recording"></video></figure><figure><figcaption class="after"><span class="player-label"><i class="player-dot" aria-hidden="true"></i>After</span><span class="muted" id="cap-after"></span><span class="toggle" id="clean-toggle" hidden><label><input type="checkbox" id="show-clean" checked> cursor removed</label></span></figcaption><video id="after" controls preload="metadata" aria-label="Polished recording"></video></figure></div>
+  <div class="busy-line" id="busy-line" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-text"></span></div>
+  <div class="script-heading"><h2>Script</h2><p class="muted">Click a line to hear it · edit it or ask for a change, and only that line is redone</p><span class="script-legend"><i aria-hidden="true"></i>Playing line</span></div><ol class="lines" id="lines" aria-label="Editable script"></ol>
+</main>
+<div class="toast" id="toast" role="status" hidden></div>
+<!-- Original application code is unchanged. The separate layer is presentation-only. -->
+<script src="./studio.js"></script>
+<script src="./assets/presentation.js"></script>
+</body>
+</html>

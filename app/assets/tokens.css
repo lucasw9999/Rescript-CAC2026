@@ -1,0 +1,13 @@
+@font-face{font-family:Fredoka;src:url('./fonts/fredoka.ttf') format('truetype');font-weight:300 700;font-display:swap}
+@font-face{font-family:'DM Sans';src:url('./fonts/dm-sans.ttf') format('truetype');font-weight:100 1000;font-display:swap}
+:root{
+  --blue:#0a6cff;--blue-dark:#0755c9;--ink:#17253d;--muted:#52617a;--paper:#ffffff;--sky:#eff7ff;--line:#d5e2f2;
+  --pip:#0a6cff;--kit:#ff827c;--echo:#a894ed;--tempo:#ffcb55;--scout:#72d7b2;
+  --coral-pale:#fff0ee;--mint-pale:#eaf9f2;--yellow-pale:#fff7db;--violet-pale:#f2efff;
+  --font-display:Fredoka,'Trebuchet MS',sans-serif;--font-body:'DM Sans','Helvetica Neue',sans-serif;
+  --text-xs:.75rem;--text-sm:.875rem;--text-md:1rem;--text-lg:1.25rem;--text-xl:1.5rem;--text-h2:clamp(2rem,4vw,3rem);--text-hero:clamp(3rem,5.5vw,4.5rem);
+  --weight-read:400;--weight-emphasis:550;--weight-announce:600;
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px;--space-8:32px;--space-10:40px;--space-12:48px;--space-16:64px;--space-20:80px;--space-24:96px;
+  --radius-sm:12px;--radius-md:20px;--radius-lg:32px;--radius-pill:999px;--content:1200px;
+  --shadow:0 16px 48px #294b7d10;--shadow-toy:0 8px 0 #dbe8f6;--ease:cubic-bezier(.2,.7,.2,1);--duration:220ms;--exit:140ms;
+}

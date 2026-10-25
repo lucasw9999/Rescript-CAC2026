@@ -1,0 +1,15 @@
+# Personal voice references and recordings
+voices/
+*.wav
+*.mp4
+*.mov
+*.m4a
+
+# Local sign-in files and caches
+.codex/
+auth.json
+.env
+.env.*
+polish-*/
+__pycache__/
+.DS_Store
